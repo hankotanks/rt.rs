@@ -12,7 +12,7 @@
             }
         </style>
     </head>
-    <body id="wasm-example">
+    <body id="rtrs">
         <script type="module">
             import init from "./pkg/rtrs.js";
             init().catch((error) => {
@@ -20,7 +20,7 @@
                     throw error;
                 }
             }).then(() => {
-                console.log("WASM Loaded");
+                console.log("Loaded");
             });
         </script>
     </body>
