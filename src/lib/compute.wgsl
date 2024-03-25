@@ -15,8 +15,13 @@ fn main_cs(@builtin(global_invocation_id) id: vec3<u32>) {
         let coord = vec2<i32>(i32(id.x), i32(id.y));
 
         if(id.x * 2u < size.width && id.y * 2u < size.height) {
-            let color = vec4<f32>(1.0, 0.0, 0.0, 0.0);
-            textureStore(out, coord, color);
+            if(id.x % 2u == 0u) {
+                let color = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+                textureStore(out, coord, color);
+            } else {
+                let color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+                textureStore(out, coord, color);
+            }
         } else if(id.x * 2u > size.width && id.y * 2u < size.height) {
             let color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
             textureStore(out, coord, color);
@@ -24,8 +29,13 @@ fn main_cs(@builtin(global_invocation_id) id: vec3<u32>) {
             let color = vec4<f32>(0.0, 1.0, 0.0, 0.0);
             textureStore(out, coord, color);
         } else {
-            let color = vec4<f32>(0.0, 0.0, 1.0, 0.0);
-            textureStore(out, coord, color);
+            if(id.y % 2u == 0u) {
+                let color = vec4<f32>(0.0, 0.0, 1.0, 0.0);
+                textureStore(out, coord, color);
+            } else {
+                let color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+                textureStore(out, coord, color);
+            }
         }
     }
 }

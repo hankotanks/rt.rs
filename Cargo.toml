@@ -20,6 +20,7 @@ console_log = "1.0"
 wgpu = { version = "0.18", features = ["webgl"]}
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4.30"
+time = { version = "0.3.34", features = ["wasm-bindgen"] }
 poll-promise = { version = "0.3.0", features = ["web"] }
 web-sys = { version = "0.3", features = [
     "Document",
@@ -29,6 +30,7 @@ web-sys = { version = "0.3", features = [
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.10"
+time = "0.3.34"
 pollster = "0.3.0"
 
 [lib]

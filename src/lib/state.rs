@@ -75,10 +75,10 @@ impl PipelinePackage {
         // Compute Pipeline
 
         let builder = PipelineBuilder {
-            device: &device,
+            device,
             view: &texture_view_compute,
-            module: &shader_compute,
-            size_group_layout: &size_group_layout,
+            module: shader_compute,
+            size_group_layout,
         };
 
         let Pipeline {
@@ -90,10 +90,10 @@ impl PipelinePackage {
         // Render Pipeline
 
         let builder = PipelineBuilder {
-            device: &device,
+            device,
             view: &texture_view_render,
-            module: &shader_render,
-            size_group_layout: &size_group_layout,
+            module: shader_render,
+            size_group_layout,
         };
 
         let Pipeline {
@@ -121,7 +121,6 @@ pub struct State {
     shader_render: wgpu::ShaderModule,
 
     // Bind groups & compute pass
-    resizing: (Option<Size>, bool), // `.1` first frame
     size_buffer: wgpu::Buffer,
     size_group_layout: wgpu::BindGroupLayout,
     size_group: wgpu::BindGroup,
@@ -272,7 +271,7 @@ impl State {
             wgpu::ShaderModuleDescriptor {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl({
-                    let shader: &'static str = include_str!("compute.wgsl").into();
+                    let shader: &'static str = include_str!("compute.wgsl");
 
                     let wg_dim = CONFIG.wg_dim();
                     let wg_dim = format!("{}", wg_dim);
@@ -326,7 +325,6 @@ impl State {
             shader_compute,
             shader_render,
 
-            resizing: (None, false),
             size_buffer,
             size_group_layout,
             size_group,
@@ -347,21 +345,49 @@ impl State {
         &self.window
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.window_size = new_size;
+    pub fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        if size.width > 0 && size.height > 0 {
+            self.window_size = size;
 
-            self.surface_config.width = new_size.width;
-            self.surface_config.height = new_size.height;
+            self.surface_config.width = size.width;
+            self.surface_config.height = size.height;
 
             self.surface.configure(&self.device, &self.surface_config);
 
-            if let Err(_) = CONFIG.resolution {
-                let size = Into::<Size>::into(new_size);
+            if CONFIG.resolution.is_err() {
+                let size = Into::<Size>::into(size);
 
-                let _ = self.resizing.0.insert(size);
-
-                self.resizing.1 = true;
+                self.queue.write_buffer(
+                    &self.size_buffer, 
+                    0,
+                    bytemuck::cast_slice(&[size])
+                );
+    
+                let Self {
+                    device,
+                    shader_compute,
+                    shader_render,
+                    size_group_layout, ..
+                } = self;
+    
+                let PipelinePackage {
+                    compute_group,
+                    compute_pipeline,
+                    render_group,
+                    render_pipeline,
+                } = PipelinePackage::new(
+                    device, 
+                    size, 
+                    shader_compute, 
+                    shader_render, 
+                    size_group_layout
+                );
+    
+                self.compute_group = compute_group;
+                self.compute_pipeline = compute_pipeline;
+    
+                self.render_group = render_group;
+                self.render_pipeline = render_pipeline;
             }
         }
     }
@@ -376,44 +402,6 @@ impl State {
     }
 
     pub(super) fn update(&mut self) {
-        if self.resizing.1 {
-            self.resizing.1 = false;
-        } else if let Some(size) = self.resizing.0 {
-            self.queue.write_buffer(
-                &self.size_buffer, 
-                0,
-                bytemuck::cast_slice(&[size])
-            );
-
-            let Self {
-                device,
-                shader_compute,
-                shader_render,
-                size_group_layout, ..
-            } = self;
-
-            let PipelinePackage {
-                compute_group,
-                compute_pipeline,
-                render_group,
-                render_pipeline,
-            } = PipelinePackage::new(
-                device, 
-                size, 
-                shader_compute, 
-                shader_render, 
-                size_group_layout
-            );
-
-            self.compute_group = compute_group;
-            self.compute_pipeline = compute_pipeline;
-
-            self.render_group = render_group;
-            self.render_pipeline = render_pipeline;
-
-            let _ = self.resizing.0.take();
-        }
-
         let mut encoder = self.device.create_command_encoder(&{
             wgpu::CommandEncoderDescriptor::default()
         });

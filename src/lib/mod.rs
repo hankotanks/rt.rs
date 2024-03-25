@@ -42,6 +42,7 @@ pub struct Config {
     // If `Ok`, size is result, 
     // otherwise workgroup 'tile' size is specified in the `Err` value
     pub resolution: Result<Size, u32>,
+    pub fps: u32,
 }
 
 impl Config {
@@ -74,6 +75,7 @@ impl Default for Config {
         Self { 
             format: wgpu::TextureFormat::Rgba8Unorm,
             resolution: Err(16), // Ok(Size { width: 640, height: 480, }),
+            fps: 60,
         }
     }
 }
@@ -173,6 +175,9 @@ pub async fn run() -> Result<(), Failed> {
         }
     }
 
+    let mut size = None;
+    let mut size_instant = time::Instant::now();
+
     let mut state = match state::State::new(window).await {
         Ok(state) => state,
         Err(error) => {
@@ -182,46 +187,73 @@ pub async fn run() -> Result<(), Failed> {
         },
     };
 
-    event_loop.run(move |event, _, control_flow| match event {
-        event::Event::WindowEvent { event, window_id, .. }
-            if window_id == state.window().id() => match event {
+    let fps = (CONFIG.fps as f32).recip();
+    
+    let mut time_accum = 0.;
+    let mut time_curr = time::Instant::now();
 
-            event::WindowEvent::CloseRequested | //
-            event::WindowEvent::KeyboardInput {
-                input: event::KeyboardInput {
-                    state: event::ElementState::Pressed,
-                    virtual_keycode: Some(event::VirtualKeyCode::Escape), ..
-                }, ..
-            } => *control_flow = ControlFlow::Exit,
-            event::WindowEvent::Resized(physical_size) => //
-                state.resize(physical_size),
-            event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => //
-                state.resize(*new_inner_size),
+    event_loop.run(move |event, _, control_flow| { 
+        time_accum += time_curr.elapsed().as_seconds_f32();
+        time_curr = time::Instant::now();
+
+        match event {
+            event::Event::WindowEvent { event, window_id, .. }
+                if window_id == state.window().id() => match event {
+
+                event::WindowEvent::CloseRequested | //
+                event::WindowEvent::KeyboardInput {
+                    input: event::KeyboardInput {
+                        state: event::ElementState::Pressed,
+                        virtual_keycode: Some(event::VirtualKeyCode::Escape), ..
+                    }, ..
+                } => *control_flow = ControlFlow::Exit,
+                event::WindowEvent::Resized(physical_size) //
+                    if size != Some(physical_size) => {
+
+                    size = Some(physical_size);
+                    size_instant = time::Instant::now();
+                },
+                event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => //
+                    state.resize(*new_inner_size),
+                _ => { /*  */ },
+            },
+            event::Event::RedrawRequested(window_id) 
+                if window_id == state.window().id() => {
+
+                match state.render() {
+                    Ok(_) => { /*  */ },
+                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        let size = state.size();
+
+                        state.resize(size)
+                    },
+                    Err(wgpu::SurfaceError::OutOfMemory) => //
+                        *control_flow = ControlFlow::Exit,
+                    Err(wgpu::SurfaceError::Timeout) => {
+                        log::warn!("{}", Error::TimeOut);
+                    },
+                }
+            },
+            event::Event::RedrawEventsCleared => {
+                state.window().request_redraw();
+            },
+            event::Event::MainEventsCleared => {
+                if size_instant.elapsed().as_seconds_f32() > fps {
+                    if let Some(size) = size.take() {
+                        state.resize(size);
+                    }                    
+                }
+
+                if time_accum >= fps {
+                    time_accum -= fps;
+
+                    state.update();
+                }
+
+                state.window().request_redraw();
+            },
             _ => { /*  */ },
-        },
-        event::Event::RedrawRequested(window_id) 
-            if window_id == state.window().id() => {
-
-            state.update();
-
-            match state.render() {
-                Ok(_) => { /*  */ },
-                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                    let size = state.size();
-
-                    state.resize(size)
-                },
-                Err(wgpu::SurfaceError::OutOfMemory) => //
-                    *control_flow = ControlFlow::Exit,
-                Err(wgpu::SurfaceError::Timeout) => {
-                    log::warn!("{}", Error::TimeOut);
-                },
-            }
-        },
-        event::Event::RedrawEventsCleared => {
-            state.window().request_redraw();
-        },
-        _ => { /*  */ },
+        }
     });
 }
 
