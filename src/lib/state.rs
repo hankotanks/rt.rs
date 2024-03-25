@@ -139,7 +139,7 @@ pub struct State {
 }
 
 impl State {
-    pub(super) async fn new(window: Window) -> anyhow::Result<Self> {
+    pub(super) async fn new(window: Window) -> Result<Self, Error> {
         //
         // WGPU State Information
 
@@ -237,7 +237,7 @@ impl State {
         
         let format = CONFIG.format.add_srgb_suffix();
         if !caps.formats.contains(&format) {
-            anyhow::bail!(Error::TextureFormatUnavailable);
+            return Err(Error::TextureFormatUnavailable);
         }
 
         let wgpu::SurfaceCapabilities {

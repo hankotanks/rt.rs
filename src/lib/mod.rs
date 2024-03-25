@@ -1,3 +1,5 @@
+#![feature(type_alias_impl_trait)]
+
 mod state;
 
 mod size;
@@ -15,7 +17,7 @@ use std::{error, fmt};
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
 
-use winit::{dpi, event};
+use winit::event;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
@@ -24,12 +26,17 @@ cfg_if::cfg_if! {
     if #[cfg(target_arch="wasm32")] {
         type Failed = JsValue;
 
-        // `wasm-bindgen` requires this signature
-        const FAILURE: Result<(), JsValue> = Err(JsValue::NULL);
-    } else {
-        type Failed = ();
+        #[allow(non_snake_case)]
+        pub(crate) fn FAILURE(err: Error) -> Result<(), JsValue> {
+            log::error!("{}", err);
 
-        const FAILURE: Result<(), ()> = Err(());
+            Err(JsValue::symbol(Some(&format!("{:?}", err))))
+        }
+    } else {
+        type Failed = Error;
+
+        #[allow(non_snake_case)]
+        pub(crate) fn FAILURE(e: Error) -> Result<(), Failed> { Err(e) }
     }
 }
 
@@ -89,11 +96,12 @@ pub(crate) static CONFIG: once_cell::sync::Lazy<Config> = //
 
 #[allow(dead_code)]
 #[derive(Debug)]
-pub(crate) enum Error {
+pub enum Error {
     LoggerInitFailure,
     CanvasAppendFailure,
     TimeOut,
     TextureFormatUnavailable,
+    OutOfMemory,
 }
 
 impl fmt::Display for Error {
@@ -110,6 +118,7 @@ impl fmt::Display for Error {
                     CONFIG.format.add_srgb_suffix()
                 ).into_boxed_str()
             }),
+            Error::OutOfMemory => "Ran out of memory",
         })
     }
 }
@@ -130,10 +139,8 @@ pub async fn run() -> Result<(), Failed> {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 
-            if console_log::init_with_level(log::Level::Warn).is_err() {
-                eprintln!("{}", Error::LoggerInitFailure);
-
-                return FAILURE;
+            if console_log::init_with_level(log::Level::Error).is_err() {
+                return FAILURE(Error::LoggerInitFailure);
             }
         } else {
             env_logger::init();
@@ -142,66 +149,93 @@ pub async fn run() -> Result<(), Failed> {
 
     let event_loop = EventLoop::new();
 
-    let mut window = WindowBuilder::new();
-    if let Err(wg) = CONFIG.resolution {
-        window = window.with_min_inner_size(dpi::Size::Physical({
-            dpi::PhysicalSize::new(wg, wg)
-        }));
-    }
-        
-    let window = window.build(&event_loop).unwrap();
+    #[allow(unused_mut)]  
+    let mut window = WindowBuilder::new()
+        .build(&event_loop)
+        .unwrap();
 
     #[cfg(target_arch = "wasm32")] {
         use winit::dpi::PhysicalSize;
         use winit::platform::web::WindowExtWebSys;
+        use winit::window::Window;
 
-        window.set_inner_size(PhysicalSize::new(450, 400));
+        // TODO: More elegant error-handling
+        // This is done to circumvent given `Err(JsValue(*mut u8))` values
+        fn canvas(window: &mut Window) -> anyhow::Result<()> {
+            let dom = web_sys::window()
+                .ok_or(Error::CanvasAppendFailure)?;
 
-        let result = web_sys::window()
-            .and_then(|win| win.document())
-            .and_then(|doc| {
-                let canvas = web_sys::Element::from(window.canvas());
+            let size = PhysicalSize {
+                width: dom.inner_width()
+                    .ok()
+                    .ok_or(Error::CanvasAppendFailure)?
+                    .as_f64()
+                    .ok_or(Error::CanvasAppendFailure)? as u32,
+                height: dom.inner_height()
+                    .ok()
+                    .ok_or(Error::CanvasAppendFailure)?
+                    .as_f64()
+                    .ok_or(Error::CanvasAppendFailure)? as u32,
+            };
 
-                doc.get_element_by_id("rtrs")?
-                    .append_child(&canvas).ok()?;
+            window.set_inner_size(size);
 
-                Some(())
-            }).ok_or(Error::CanvasAppendFailure);
+            let doc = dom.document()
+                .ok_or(Error::CanvasAppendFailure)?;
 
-        if let Err(error) = result {
-            eprintln!("{}", error);
+            let elem = web_sys::Element::from(window.canvas());
+            doc.get_element_by_id("rtrs")
+                .ok_or(Error::CanvasAppendFailure)?
+                .append_child(&elem)
+                .ok()
+                .ok_or(Error::CanvasAppendFailure)?;
 
-            return FAILURE;
+            Ok(())
+        }
+
+        if let Err(_) = canvas(&mut window) {
+            return FAILURE(Error::CanvasAppendFailure);
         }
     }
 
+    // Keeps track of resize actions. 
+    // `size_instant` keeps track of the last resize event, 
+    // after the user has stopped resizing, 
+    // the new size can be processed
     let mut size = None;
     let mut size_instant = chrono::Local::now();
 
     let mut state = match state::State::new(window).await {
         Ok(state) => state,
-        Err(error) => {
-            eprintln!("{}", error);
-
-            return FAILURE;
+        Err(err) => {
+            return FAILURE(err);
         },
     };
 
+    // The number of milliseconds per frame
     let fps = (CONFIG.fps as f64).recip() * 1_000.;
     
+    // Respectively: time since last update; current time
     let mut time_accum = 0.;
     let mut time_curr = chrono::Local::now();
+    
+    event_loop.run(move |event, _, control_flow| {
+        // If `status` != None by the end of the loop, program terminates
+        let mut status = None;
 
-    event_loop.run(move |event, _, control_flow| { 
+        // Take a snapshot of the current Instant
         let time_frame_start = chrono::Local::now();
 
+        // Accumulate time since last frame update
         time_accum += time_curr
             .signed_duration_since(time_frame_start)
             .num_milliseconds()
             .abs() as f64;
 
+        // Update current Instant
         time_curr = time_frame_start;
 
+        // Handle this frame's event
         match event {
             event::Event::WindowEvent { event, window_id, .. }
                 if window_id == state.window().id() => match event {
@@ -234,10 +268,10 @@ pub async fn run() -> Result<(), Failed> {
                         state.resize(size);
                     },
                     Err(wgpu::SurfaceError::OutOfMemory) => //
-                        *control_flow = ControlFlow::Exit,
-                    Err(wgpu::SurfaceError::Timeout) => {
-                        log::warn!("{}", Error::TimeOut);
-                    },
+                        status = Some(Error::OutOfMemory),
+                    Err(wgpu::SurfaceError::Timeout) => //
+                        // NOTE: It isn't strictly necessary to bail here
+                        status = Some(Error::TimeOut),
                 }
             },
             event::Event::RedrawEventsCleared => {
@@ -249,29 +283,43 @@ pub async fn run() -> Result<(), Failed> {
                     .num_milliseconds()
                     .abs() as f64;
 
+                // Update flag
                 let mut update_required = false;
 
+                // Check if enough time has passed since the user resized
                 if time_temp > fps {
+                    // If so, resize the texture and update uniforms
                     if let Some(size) = size.take() {
                         state.resize(size);
 
+                        // Set flag
                         update_required = true;
                     }                    
                 }
 
+                // Set the update flag if enough time has elapsed
                 if time_accum >= fps {
                     time_accum -= fps;
 
+                    // Set flag
                     update_required = true;
                 }
 
+                // Perform the update
                 if update_required {
                     state.update();
                 }
 
+                // Update has been performed; now we can redraw safely
                 state.window().request_redraw();
             },
             _ => { /*  */ },
+        }
+
+        if let Some(err) = status.take() {
+            log::error!("{}", err);
+
+            *control_flow = ControlFlow::Exit;
         }
     });
 }
