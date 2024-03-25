@@ -252,7 +252,10 @@ impl State {
             height: window_size.height,
             present_mode: present_modes[0],
             alpha_mode: alpha_modes[0],
-            view_formats: Vec::with_capacity(0),
+            view_formats: vec![
+                CONFIG.format, 
+                CONFIG.format.add_srgb_suffix(),
+            ],
         };
 
         surface.configure(&device, &surface_config);

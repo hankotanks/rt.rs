@@ -75,7 +75,7 @@ impl Default for Config {
         Self { 
             format: wgpu::TextureFormat::Rgba8Unorm,
             resolution: Err(16), // Ok(Size { width: 640, height: 480, }),
-            fps: 60,
+            fps: 15,
         }
     }
 }
@@ -187,9 +187,9 @@ pub async fn run() -> Result<(), Failed> {
         },
     };
 
-    let fps = (CONFIG.fps as f32).recip().floor() as i64 * 1000;
+    let fps = (CONFIG.fps as f64).recip() * 1_000.;
     
-    let mut time_accum = 0;
+    let mut time_accum = 0.;
     let mut time_curr = chrono::Local::now();
 
     event_loop.run(move |event, _, control_flow| { 
@@ -197,7 +197,8 @@ pub async fn run() -> Result<(), Failed> {
 
         time_accum += time_curr
             .signed_duration_since(time_frame_start)
-            .num_milliseconds();
+            .num_milliseconds()
+            .abs() as f64;
 
         time_curr = time_frame_start;
 
@@ -230,7 +231,7 @@ pub async fn run() -> Result<(), Failed> {
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         let size = state.size();
 
-                        state.resize(size)
+                        state.resize(size);
                     },
                     Err(wgpu::SurfaceError::OutOfMemory) => //
                         *control_flow = ControlFlow::Exit,
@@ -245,17 +246,26 @@ pub async fn run() -> Result<(), Failed> {
             event::Event::MainEventsCleared => {
                 let time_temp = size_instant
                     .signed_duration_since(time_frame_start)
-                    .num_milliseconds();
+                    .num_milliseconds()
+                    .abs() as f64;
+
+                let mut update_required = false;
 
                 if time_temp > fps {
                     if let Some(size) = size.take() {
                         state.resize(size);
+
+                        update_required = true;
                     }                    
                 }
 
                 if time_accum >= fps {
                     time_accum -= fps;
 
+                    update_required = true;
+                }
+
+                if update_required {
                     state.update();
                 }
 
