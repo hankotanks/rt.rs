@@ -15,16 +15,16 @@ use std::{error, fmt};
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
 
-use winit::event;
+use winit::{dpi, event};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
-
 
 // Handle platform-dependent failure states
 cfg_if::cfg_if! {
     if #[cfg(target_arch="wasm32")] {
         type Failed = JsValue;
 
+        // `wasm-bindgen` requires this signature
         const FAILURE: Result<(), JsValue> = Err(JsValue::NULL);
     } else {
         type Failed = ();
@@ -35,20 +35,45 @@ cfg_if::cfg_if! {
 
 //
 // CONFIG declaration
-//
 
 #[allow(non_snake_case)]
 pub struct Config {
     pub format: wgpu::TextureFormat,
-    // If `Ok`, size is result, otherwise it is the size of window
-    pub resolution: Result<Size, ()>,
+    // If `Ok`, size is result, 
+    // otherwise workgroup 'tile' size is specified in the `Err` value
+    pub resolution: Result<Size, u32>,
+}
+
+impl Config {
+    pub fn wg_dim(&self) -> u32 {
+        let dim = match self.resolution {
+            Ok(size) => {
+                let Size {
+                    mut width,
+                    mut height,
+                } = size;
+
+                while height != 0 {
+                    let temp = width;
+
+                    width = height;
+                    height = temp % height;
+                }
+                
+                width
+            },
+            Err(wg) => wg,
+        };
+
+        if dim * dim > 256 { 16 } else { dim }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self { 
             format: wgpu::TextureFormat::Rgba8Unorm,
-            resolution: Err(()),
+            resolution: Err(16), // Ok(Size { width: 640, height: 480, }),
         }
     }
 }
@@ -59,7 +84,6 @@ pub(crate) static CONFIG: once_cell::sync::Lazy<Config> = //
 
 //
 // Error definition
-//
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -116,9 +140,14 @@ pub async fn run() -> Result<(), Failed> {
 
     let event_loop = EventLoop::new();
 
-    let window = WindowBuilder::new()
-        .build(&event_loop)
-        .unwrap();
+    let mut window = WindowBuilder::new();
+    if let Err(wg) = CONFIG.resolution {
+        window = window.with_min_inner_size(dpi::Size::Physical({
+            dpi::PhysicalSize::new(wg, wg)
+        }));
+    }
+        
+    let window = window.build(&event_loop).unwrap();
 
     #[cfg(target_arch = "wasm32")] {
         use winit::dpi::PhysicalSize;
@@ -164,6 +193,10 @@ pub async fn run() -> Result<(), Failed> {
                     virtual_keycode: Some(event::VirtualKeyCode::Escape), ..
                 }, ..
             } => *control_flow = ControlFlow::Exit,
+            event::WindowEvent::Resized(physical_size) => //
+                state.resize(physical_size),
+            event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => //
+                state.resize(*new_inner_size),
             _ => { /*  */ },
         },
         event::Event::RedrawRequested(window_id) 

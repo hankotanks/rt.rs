@@ -1,3 +1,5 @@
+use std::borrow;
+
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -8,6 +10,106 @@ use crate::CONFIG;
 use crate::Error;
 use crate::{Pipeline, Size};
 
+struct PipelinePackage {
+    compute_group: wgpu::BindGroup,
+    compute_pipeline: wgpu::ComputePipeline,
+    render_group: wgpu::BindGroup,
+    render_pipeline: wgpu::RenderPipeline,
+}
+
+impl PipelinePackage {
+    fn new(
+        device: &wgpu::Device,
+        size: Size,
+        shader_compute: &wgpu::ShaderModule,
+        shader_render: &wgpu::ShaderModule,
+        size_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        //
+        // Texture Init
+
+        let texture = device.create_texture(
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: size.into(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: CONFIG.format,
+                usage: wgpu::TextureUsages::STORAGE_BINDING 
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[
+                    CONFIG.format, 
+                    CONFIG.format.add_srgb_suffix(),
+                ],
+            }
+        );
+
+        let texture_view_render = texture.create_view(
+            &wgpu::TextureViewDescriptor {
+                label: None,
+                format: Some(CONFIG.format.add_srgb_suffix()),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::All,
+                base_mip_level: 0,
+                mip_level_count: Some(1),
+                base_array_layer: 0,
+                array_layer_count: Some(1),
+            }
+        );
+
+        let texture_view_compute = texture.create_view(
+            &wgpu::TextureViewDescriptor {
+                label: None,
+                format: Some(CONFIG.format),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::All,
+                base_mip_level: 0,
+                mip_level_count: Some(1),
+                base_array_layer: 0,
+                array_layer_count: Some(1),
+            }
+        );
+
+        //
+        // Compute Pipeline
+
+        let builder = PipelineBuilder {
+            device: &device,
+            view: &texture_view_compute,
+            module: &shader_compute,
+            size_group_layout: &size_group_layout,
+        };
+
+        let Pipeline {
+            inner: compute_pipeline,
+            group: compute_group, ..
+        } = builder.into();
+
+        //
+        // Render Pipeline
+
+        let builder = PipelineBuilder {
+            device: &device,
+            view: &texture_view_render,
+            module: &shader_render,
+            size_group_layout: &size_group_layout,
+        };
+
+        let Pipeline {
+            inner: render_pipeline,
+            group: render_group, ..
+        } = builder.into();
+
+        Self {
+            compute_group,
+            compute_pipeline,
+            render_group,
+            render_pipeline,
+        }
+    }
+}
+
 pub struct State {
     // WGPU interface
     device: wgpu::Device,
@@ -15,8 +117,13 @@ pub struct State {
     surface: wgpu::Surface,
     surface_config: wgpu::SurfaceConfiguration,
 
+    shader_compute: wgpu::ShaderModule,
+    shader_render: wgpu::ShaderModule,
+
     // Bind groups & compute pass
-    size: Size,
+    resizing: (Option<Size>, bool), // `.1` first frame
+    size_buffer: wgpu::Buffer,
+    size_group_layout: wgpu::BindGroupLayout,
     size_group: wgpu::BindGroup,
     compute_group: wgpu::BindGroup,
     compute_pipeline: wgpu::ComputePipeline,
@@ -36,7 +143,6 @@ impl State {
     pub(super) async fn new(window: Window) -> anyhow::Result<Self> {
         //
         // WGPU State Information
-        //
 
         let window_size = window.inner_size();
 
@@ -83,16 +189,16 @@ impl State {
 
         //
         // Size Buffer & Bind Groups
-        //
 
         let size = CONFIG.resolution
-            .unwrap_or_else(|()| window_size.into());
+            .unwrap_or_else(|_| window_size.into());
 
         let size_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::cast_slice(&[size]),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM 
+                     | wgpu::BufferUsages::COPY_DST,
             }
         );
 
@@ -125,7 +231,6 @@ impl State {
 
         //
         // Surface Configuration
-        //
 
         let caps = surface.get_capabilities(&adapter);
 
@@ -153,7 +258,6 @@ impl State {
 
         //
         // Shader Configuration
-        //
 
         let shader_render = device.create_shader_module(
             wgpu::ShaderModuleDescriptor {
@@ -168,77 +272,21 @@ impl State {
             wgpu::ShaderModuleDescriptor {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl({
-                    include_str!("compute.wgsl").into()
+                    let shader: &'static str = include_str!("compute.wgsl").into();
+
+                    let wg_dim = CONFIG.wg_dim();
+                    let wg_dim = format!("{}", wg_dim);
+
+                    let shader = shader.replace("^@", &wg_dim);
+                    let shader = shader.replace("?@", &wg_dim);
+
+                    borrow::Cow::Borrowed(Box::leak(shader.into_boxed_str()))
                 }),
             },
         );
 
         //
-        // Texture Init
-        //
-
-        let texture = device.create_texture(
-            &wgpu::TextureDescriptor {
-                label: None,
-                size: size.into(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: CONFIG.format,
-                usage: wgpu::TextureUsages::STORAGE_BINDING 
-                     | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[
-                    CONFIG.format, 
-                    CONFIG.format.add_srgb_suffix(),
-                ],
-            }
-        );
-
-        let texture_view_render = texture.create_view(
-            &wgpu::TextureViewDescriptor {
-                label: None,
-                format: Some(CONFIG.format.add_srgb_suffix()),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                aspect: wgpu::TextureAspect::All,
-                base_mip_level: 0,
-                mip_level_count: Some(1),
-                base_array_layer: 0,
-                array_layer_count: Some(1),
-            }
-        );
-
-        let texture_view_compute = texture.create_view(
-            &wgpu::TextureViewDescriptor {
-                label: None,
-                format: Some(CONFIG.format),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                aspect: wgpu::TextureAspect::All,
-                base_mip_level: 0,
-                mip_level_count: Some(1),
-                base_array_layer: 0,
-                array_layer_count: Some(1),
-            }
-        );
-
-        //
-        // Compute Pipeline
-        //
-
-        let builder = PipelineBuilder {
-            device: &device,
-            view: &texture_view_compute,
-            module: &shader_compute,
-            size_group_layout: &size_group_layout,
-        };
-
-        let Pipeline {
-            inner: compute_pipeline,
-            group: compute_group, ..
-        } = builder.into();
-
-        //
         // Render Pipeline
-        //
 
         let vertices = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
@@ -256,17 +304,18 @@ impl State {
             }
         );
 
-        let builder = PipelineBuilder {
-            device: &device,
-            view: &texture_view_render,
-            module: &shader_render,
-            size_group_layout: &size_group_layout,
-        };
-
-        let Pipeline {
-            inner: render_pipeline,
-            group: render_group, ..
-        } = builder.into();
+        let PipelinePackage {
+            compute_group,
+            compute_pipeline,
+            render_group,
+            render_pipeline,
+        } = PipelinePackage::new(
+            &device, 
+            size, 
+            &shader_compute, 
+            &shader_render, 
+            &size_group_layout
+        );
 
         Ok(Self {
             device,
@@ -274,7 +323,12 @@ impl State {
             surface,
             surface_config,
 
-            size,
+            shader_compute,
+            shader_render,
+
+            resizing: (None, false),
+            size_buffer,
+            size_group_layout,
             size_group,
             compute_group,
             compute_pipeline,
@@ -296,9 +350,19 @@ impl State {
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.window_size = new_size;
+
             self.surface_config.width = new_size.width;
             self.surface_config.height = new_size.height;
+
             self.surface.configure(&self.device, &self.surface_config);
+
+            if let Err(_) = CONFIG.resolution {
+                let size = Into::<Size>::into(new_size);
+
+                let _ = self.resizing.0.insert(size);
+
+                self.resizing.1 = true;
+            }
         }
     }
 
@@ -312,6 +376,44 @@ impl State {
     }
 
     pub(super) fn update(&mut self) {
+        if self.resizing.1 {
+            self.resizing.1 = false;
+        } else if let Some(size) = self.resizing.0 {
+            self.queue.write_buffer(
+                &self.size_buffer, 
+                0,
+                bytemuck::cast_slice(&[size])
+            );
+
+            let Self {
+                device,
+                shader_compute,
+                shader_render,
+                size_group_layout, ..
+            } = self;
+
+            let PipelinePackage {
+                compute_group,
+                compute_pipeline,
+                render_group,
+                render_pipeline,
+            } = PipelinePackage::new(
+                device, 
+                size, 
+                shader_compute, 
+                shader_render, 
+                size_group_layout
+            );
+
+            self.compute_group = compute_group;
+            self.compute_pipeline = compute_pipeline;
+
+            self.render_group = render_group;
+            self.render_pipeline = render_pipeline;
+
+            let _ = self.resizing.0.take();
+        }
+
         let mut encoder = self.device.create_command_encoder(&{
             wgpu::CommandEncoderDescriptor::default()
         });
@@ -326,9 +428,19 @@ impl State {
             compute_pass.set_bind_group(0, &self.size_group, &[]);
             compute_pass.set_bind_group(1, &self.compute_group, &[]);
 
+            let dim = CONFIG.wg_dim();
+
+            let Size {
+                width,
+                height, ..
+            } = match CONFIG.resolution {
+                Ok(size) => size,
+                Err(_) => Size::from(self.window_size),
+            };
+
             compute_pass.dispatch_workgroups(
-                self.size.width / 16,
-                self.size.height / 16,
+                width.div_euclid(dim), 
+                height.div_euclid(dim), 
                 1
             );
         }
