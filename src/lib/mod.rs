@@ -176,7 +176,7 @@ pub async fn run() -> Result<(), Failed> {
     }
 
     let mut size = None;
-    let mut size_instant = time::Instant::now();
+    let mut size_instant = chrono::Local::now();
 
     let mut state = match state::State::new(window).await {
         Ok(state) => state,
@@ -187,14 +187,19 @@ pub async fn run() -> Result<(), Failed> {
         },
     };
 
-    let fps = (CONFIG.fps as f32).recip();
+    let fps = (CONFIG.fps as f32).recip().floor() as i64 * 1000;
     
-    let mut time_accum = 0.;
-    let mut time_curr = time::Instant::now();
+    let mut time_accum = 0;
+    let mut time_curr = chrono::Local::now();
 
     event_loop.run(move |event, _, control_flow| { 
-        time_accum += time_curr.elapsed().as_seconds_f32();
-        time_curr = time::Instant::now();
+        let time_frame_start = chrono::Local::now();
+
+        time_accum += time_curr
+            .signed_duration_since(time_frame_start)
+            .num_milliseconds();
+
+        time_curr = time_frame_start;
 
         match event {
             event::Event::WindowEvent { event, window_id, .. }
@@ -211,7 +216,7 @@ pub async fn run() -> Result<(), Failed> {
                     if size != Some(physical_size) => {
 
                     size = Some(physical_size);
-                    size_instant = time::Instant::now();
+                    size_instant = chrono::Local::now();
                 },
                 event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => //
                     state.resize(*new_inner_size),
@@ -238,7 +243,11 @@ pub async fn run() -> Result<(), Failed> {
                 state.window().request_redraw();
             },
             event::Event::MainEventsCleared => {
-                if size_instant.elapsed().as_seconds_f32() > fps {
+                let time_temp = size_instant
+                    .signed_duration_since(time_frame_start)
+                    .num_milliseconds();
+
+                if time_temp > fps {
                     if let Some(size) = size.take() {
                         state.resize(size);
                     }                    

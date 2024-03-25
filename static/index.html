@@ -13,15 +13,6 @@
         </style>
     </head>
     <body id="rtrs">
-        <script type="module">
-            import init from "./pkg/rtrs.js";
-            init().catch((error) => {
-                if (!error.message.startsWith("Using exceptions")) {
-                    throw error;
-                }
-            }).then(() => {
-                console.log("Loaded");
-            });
-        </script>
+        <script src="index.js"></script>
     </body>
 </html>

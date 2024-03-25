@@ -37,7 +37,7 @@ impl PipelinePackage {
                 dimension: wgpu::TextureDimension::D2,
                 format: CONFIG.format,
                 usage: wgpu::TextureUsages::STORAGE_BINDING 
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[
                     CONFIG.format, 
                     CONFIG.format.add_srgb_suffix(),
@@ -164,6 +164,8 @@ impl State {
             }
         ).await.unwrap();
 
+        // TODO: BGRA8UNORM_STORAGE is not necessary,
+        // since Rgba8Unorm and Rgba8UnormSrgb is used instead
         let bgra8unorm_storage_enabled = adapter
             .features()
             .contains(wgpu::Features::BGRA8UNORM_STORAGE);
@@ -232,7 +234,7 @@ impl State {
         // Surface Configuration
 
         let caps = surface.get_capabilities(&adapter);
-
+        
         let format = CONFIG.format.add_srgb_suffix();
         if !caps.formats.contains(&format) {
             anyhow::bail!(Error::TextureFormatUnavailable);
