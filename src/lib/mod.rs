@@ -99,6 +99,7 @@ pub(crate) static CONFIG: once_cell::sync::Lazy<Config> = //
 pub enum Error {
     LoggerInitFailure,
     CanvasAppendFailure,
+    CanvasResizeFailure,
     TimeOut,
     TextureFormatUnavailable,
     OutOfMemory,
@@ -111,6 +112,8 @@ impl fmt::Display for Error {
                 "Couldn't initialize logger (wasm32)",
             Error::CanvasAppendFailure => //
                 "Failed to append canvas element to DOM",
+            Error::CanvasResizeFailure => //
+                "Failed to resize canvas element",
             Error::TimeOut => "Surface redraw timed out",
             Error::TextureFormatUnavailable => Box::leak({
                 format!("Requisite texture formats [{:?}, {:?}] could not be loaded", 
@@ -133,15 +136,97 @@ impl error::Error for Error {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+use winit::dpi::PhysicalSize;
+
+#[cfg(target_arch = "wasm32")]
+use web_sys::HtmlCanvasElement;
+
+#[cfg(target_arch = "wasm32")]
+fn web_dim() -> anyhow::Result<(web_sys::Window, PhysicalSize<u32>)> {
+    let dom = web_sys::window()
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    let size = PhysicalSize {
+        width: dom.inner_width()
+            .ok()
+            .ok_or(Error::CanvasAppendFailure)?
+            .as_f64()
+            .ok_or(Error::CanvasAppendFailure)? as u32,
+        height: dom.inner_height()
+            .ok()
+            .ok_or(Error::CanvasAppendFailure)?
+            .as_f64()
+            .ok_or(Error::CanvasAppendFailure)? as u32,
+    };
+
+    Ok((dom, size))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_resize(dom: web_sys::Window, size: PhysicalSize<u32>) -> anyhow::Result<()> {
+    let doc = dom.document()
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    let canvas = doc.get_element_by_id("rtrs")
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    let canvas = canvas.dyn_into::<HtmlCanvasElement>()
+        .ok()
+        .ok_or(Error::CanvasResizeFailure)?;
+
+    canvas.set_width(size.width);
+    canvas.set_height(size.height);
+
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+use winit::window::Window;
+
+#[cfg(target_arch = "wasm32")]
+use winit::platform::web::WindowExtWebSys;
+
+#[cfg(target_arch = "wasm32")]
+fn web_canvas(window: &mut Window) -> anyhow::Result<()> {
+    let (dom, size) = web_dim()?;
+
+    window.set_inner_size(size);
+
+    let doc = dom.document()
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    let elem = web_sys::Element::from(window.canvas());
+    elem.remove_attribute("style")
+        .ok()
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    let elem = elem.dyn_into::<HtmlCanvasElement>()
+        .ok()
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    elem.set_width(size.width);
+    elem.set_height(size.height);
+    elem.set_id("rtrs");
+
+    doc.get_elements_by_tag_name("body")
+        .item(0)
+        .ok_or(Error::CanvasAppendFailure)?
+        .append_child(&elem.into())
+        .ok()
+        .ok_or(Error::CanvasAppendFailure)?;
+
+    Ok(())
+}
+
 #[cfg_attr(target_arch="wasm32", wasm_bindgen(start))]
 pub async fn run() -> Result<(), Failed> {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 
-            if console_log::init_with_level(log::Level::Error).is_err() {
-                return FAILURE(Error::LoggerInitFailure);
-            }
+            // NOTE: `console_log` crate stopped working, so I subbed it out
+            wasm_logger::init(wasm_logger::Config::default())
         } else {
             env_logger::init();
         }
@@ -155,45 +240,7 @@ pub async fn run() -> Result<(), Failed> {
         .unwrap();
 
     #[cfg(target_arch = "wasm32")] {
-        use winit::dpi::PhysicalSize;
-        use winit::platform::web::WindowExtWebSys;
-        use winit::window::Window;
-
-        // TODO: More elegant error-handling
-        // This is done to circumvent given `Err(JsValue(*mut u8))` values
-        fn canvas(window: &mut Window) -> anyhow::Result<()> {
-            let dom = web_sys::window()
-                .ok_or(Error::CanvasAppendFailure)?;
-
-            let size = PhysicalSize {
-                width: dom.inner_width()
-                    .ok()
-                    .ok_or(Error::CanvasAppendFailure)?
-                    .as_f64()
-                    .ok_or(Error::CanvasAppendFailure)? as u32,
-                height: dom.inner_height()
-                    .ok()
-                    .ok_or(Error::CanvasAppendFailure)?
-                    .as_f64()
-                    .ok_or(Error::CanvasAppendFailure)? as u32,
-            };
-
-            window.set_inner_size(size);
-
-            let doc = dom.document()
-                .ok_or(Error::CanvasAppendFailure)?;
-
-            let elem = web_sys::Element::from(window.canvas());
-            doc.get_element_by_id("rtrs")
-                .ok_or(Error::CanvasAppendFailure)?
-                .append_child(&elem)
-                .ok()
-                .ok_or(Error::CanvasAppendFailure)?;
-
-            Ok(())
-        }
-
-        if let Err(_) = canvas(&mut window) {
+        if let Err(_) = web_canvas(&mut window) {
             return FAILURE(Error::CanvasAppendFailure);
         }
     }
@@ -204,6 +251,11 @@ pub async fn run() -> Result<(), Failed> {
     // the new size can be processed
     let mut size = None;
     let mut size_instant = chrono::Local::now();
+    
+    // Since we are tracking size all the time when on the web,
+    // we need an extra stopgap to prevent more updates
+    #[cfg(target_arch = "wasm32")]
+    let mut size_init = window.inner_size();
 
     let mut state = match state::State::new(window).await {
         Ok(state) => state,
@@ -221,7 +273,7 @@ pub async fn run() -> Result<(), Failed> {
     
     event_loop.run(move |event, _, control_flow| {
         // If `status` != None by the end of the loop, program terminates
-        let mut status = None;
+        let mut status: Option<Error> = None;
 
         // Take a snapshot of the current Instant
         let time_frame_start = chrono::Local::now();
@@ -234,6 +286,28 @@ pub async fn run() -> Result<(), Failed> {
 
         // Update current Instant
         time_curr = time_frame_start;
+
+        // Must listen for resizes manually on the web
+        // The event handlers (unfortunately) don't work
+        #[cfg(target_arch = "wasm32")] {
+            match web_dim() {
+                Ok((_, size_curr)) => {
+                    let size_update_required = match size {
+                        Some(size_temp) if size_temp != size_curr => true,
+                        None if size_init != size_curr => true,
+                        _ => false,
+                    };
+
+                    if size_update_required {
+                        size = Some(size_curr);
+                        size_instant = chrono::Local::now();
+                    }
+                },
+                Err(_) => {
+                    status = Some(Error::CanvasResizeFailure);
+                }
+            }
+        }
 
         // Handle this frame's event
         match event {
@@ -290,6 +364,19 @@ pub async fn run() -> Result<(), Failed> {
                 if time_temp > fps {
                     // If so, resize the texture and update uniforms
                     if let Some(size) = size.take() {
+                        #[cfg(target_arch = "wasm32")] {
+                            match web_sys::window() {
+                                Some(dom) => {
+                                    if let Err(_) = web_resize(dom, size) {
+                                        status = Some(Error::CanvasResizeFailure);
+                                    }; size_init = size;
+                                },
+                                None => {
+                                    status = Some(Error::CanvasResizeFailure);
+                                }
+                            }
+                        }
+
                         state.resize(size);
 
                         // Set flag
