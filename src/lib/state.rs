@@ -7,7 +7,6 @@ use wgpu::util::DeviceExt as _;
 
 use crate::PipelineBuilder;
 use crate::CONFIG;
-use crate::Error;
 use crate::{Pipeline, Size};
 
 struct PipelinePackage {
@@ -139,7 +138,7 @@ pub struct State {
 }
 
 impl State {
-    pub(super) async fn new(window: Window) -> Result<Self, Error> {
+    pub(super) async fn new(window: Window) -> anyhow::Result<Self> {
         //
         // WGPU State Information
 
@@ -237,7 +236,7 @@ impl State {
         
         let format = CONFIG.format.add_srgb_suffix();
         if !caps.formats.contains(&format) {
-            return Err(Error::TextureFormatUnavailable);
+            anyhow::bail!(wgpu::SurfaceError::Lost);
         }
 
         let wgpu::SurfaceCapabilities {

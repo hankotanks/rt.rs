@@ -12,7 +12,7 @@ mod vertex;
 pub(crate) use vertex::Vertex;
 pub(crate) use vertex::{INDICES, CLIP_SPACE_EXTREMA};
 
-use std::{error, fmt};
+use std::{error, fmt, marker};
 
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
@@ -27,16 +27,20 @@ cfg_if::cfg_if! {
         type Failed = JsValue;
 
         #[allow(non_snake_case)]
-        pub(crate) fn FAILURE(err: Error) -> Result<(), JsValue> {
+        pub(crate) fn FAILURE(err: impl error::Error) -> Result<(), JsValue> {
             log::error!("{}", err);
 
-            Err(JsValue::symbol(Some(&format!("{:?}", err))))
+            Err(JsValue::UNDEFINED)
         }
     } else {
-        type Failed = Error;
+        type Failed = anyhow::Error;
 
         #[allow(non_snake_case)]
-        pub(crate) fn FAILURE(e: Error) -> Result<(), Failed> { Err(e) }
+        pub(crate) fn FAILURE<E>(err: E) -> Result<(), Failed> 
+            where E: Into<Failed> { 
+
+            Err(Into::<Failed>::into(err)) 
+        }
     }
 }
 
@@ -90,51 +94,6 @@ impl Default for Config {
 pub(crate) static CONFIG: once_cell::sync::Lazy<Config> = //
     // TODO: This could read from a config file (if present), otherwise
     once_cell::sync::Lazy::new(|| { Config::default() });
-
-//
-// Error definition
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub enum Error {
-    LoggerInitFailure,
-    CanvasAppendFailure,
-    CanvasResizeFailure,
-    TimeOut,
-    TextureFormatUnavailable,
-    OutOfMemory,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", match self {
-            Error::LoggerInitFailure => //
-                "Couldn't initialize logger (wasm32)",
-            Error::CanvasAppendFailure => //
-                "Failed to append canvas element to DOM",
-            Error::CanvasResizeFailure => //
-                "Failed to resize canvas element",
-            Error::TimeOut => "Surface redraw timed out",
-            Error::TextureFormatUnavailable => Box::leak({
-                format!("Requisite texture formats [{:?}, {:?}] could not be loaded", 
-                    CONFIG.format, 
-                    CONFIG.format.add_srgb_suffix()
-                ).into_boxed_str()
-            }),
-            Error::OutOfMemory => "Ran out of memory",
-        })
-    }
-}
-
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        None
-    }
-
-    fn cause(&self) -> Option<&dyn error::Error> {
-        self.source()
-    }
-}
 
 #[cfg(target_arch = "wasm32")]
 use winit::dpi::PhysicalSize;
@@ -273,7 +232,7 @@ pub async fn run() -> Result<(), Failed> {
     
     event_loop.run(move |event, _, control_flow| {
         // If `status` != None by the end of the loop, program terminates
-        let mut status: Option<Error> = None;
+        let mut status: Option<anyhow::Error> = None;
 
         // Take a snapshot of the current Instant
         let time_frame_start = chrono::Local::now();
@@ -341,11 +300,9 @@ pub async fn run() -> Result<(), Failed> {
 
                         state.resize(size);
                     },
-                    Err(wgpu::SurfaceError::OutOfMemory) => //
-                        status = Some(Error::OutOfMemory),
-                    Err(wgpu::SurfaceError::Timeout) => //
-                        // NOTE: It isn't strictly necessary to bail here
-                        status = Some(Error::TimeOut),
+                    Err(err) => //
+                        // NOTE: Not strictly necessary to bail on Timeout...
+                        status = Some(Into::<anyhow::Error>::into(err)),
                 }
             },
             event::Event::RedrawEventsCleared => {
