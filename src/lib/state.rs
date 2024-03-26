@@ -1,4 +1,5 @@
 use std::borrow;
+use std::sync;
 
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -109,11 +110,11 @@ impl PipelinePackage {
     }
 }
 
-pub struct State {
+pub struct State<'window> {
     // WGPU interface
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface,
+    surface: wgpu::Surface<'window>,
     surface_config: wgpu::SurfaceConfiguration,
 
     shader_compute: wgpu::ShaderModule,
@@ -134,11 +135,12 @@ pub struct State {
 
     // Window
     window_size: winit::dpi::PhysicalSize<u32>,
-    window: Window,
 }
 
-impl State {
-    pub(super) async fn new(window: Window) -> anyhow::Result<Self> {
+impl<'window> State<'window> {
+    pub(super) async fn new(
+        window: sync::Arc<Window>,
+    ) -> anyhow::Result<State<'window>> {
         //
         // WGPU State Information
 
@@ -151,9 +153,10 @@ impl State {
 
         let instance = wgpu::Instance::new(instance_desc);
 
-        let surface = unsafe { 
-            instance.create_surface(&window).unwrap()
-        };
+        let surface_target = Box::new(window.clone());
+        let surface_target = wgpu::SurfaceTarget::Window(surface_target);
+
+        let surface = instance.create_surface(surface_target)?;
 
         let adapter = instance.request_adapter(
             &wgpu::RequestAdapterOptions {
@@ -171,16 +174,12 @@ impl State {
 
         let device_desc = wgpu::DeviceDescriptor {
             label: None,
-            features: if bgra8unorm_storage_enabled {
+            required_features: if bgra8unorm_storage_enabled {
                 wgpu::Features::BGRA8UNORM_STORAGE
             } else {
                 wgpu::Features::empty()
             },
-            limits: if cfg!(target_arch = "wasm32") {
-                wgpu::Limits::downlevel_webgl2_defaults()
-            } else {
-                wgpu::Limits::default()
-            },
+            required_limits: wgpu::Limits::default(),
         };
 
         let (device, queue) = adapter.request_device(&device_desc, None)
@@ -255,6 +254,7 @@ impl State {
                 CONFIG.format, 
                 CONFIG.format.add_srgb_suffix(),
             ],
+            desired_maximum_frame_latency: 1,
         };
 
         surface.configure(&device, &surface_config);
@@ -341,12 +341,7 @@ impl State {
             render_pipeline,
 
             window_size,
-            window,
         })
-    }
-
-    pub(super) fn window(&self) -> &Window {
-        &self.window
     }
 
     pub fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
