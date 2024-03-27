@@ -169,8 +169,7 @@ mod web {
             .ok_or(WEB_ERROR_SELECT)?;
     
         let canvas = canvas.dyn_into::<web_sys::HtmlCanvasElement>()
-            .ok()
-            .ok_or(WEB_ERROR_SELECT)?;
+            .map_err(|_| WEB_ERROR_SELECT)?;
     
         canvas.set_width(size.width);
         canvas.set_height(size.height);
@@ -189,13 +188,17 @@ mod web {
         let elem = window.canvas().ok_or(WEB_ERROR_CANVAS)?;
         let elem = web_sys::Element::from(elem);
 
+        // Remove this attribute just-in-case
+        // If `height` and `width` are present in style,
+        // canvas resizing will be blocked
         elem.remove_attribute("style")
-            .ok()
-            .ok_or(WEB_ERROR_PROP)?;
+            .map_err(|_| WEB_ERROR_PROP)?;
+
+        elem.set_attribute("data-raw-handle", "2024")
+            .map_err(|_| WEB_ERROR_PROP)?;
     
         let elem = elem.dyn_into::<web_sys::HtmlCanvasElement>()
-            .ok()
-            .ok_or(WEB_ERROR_SELECT)?;
+            .map_err(|_| WEB_ERROR_SELECT)?;
     
         elem.set_width(size.width);
         elem.set_height(size.height);
@@ -205,8 +208,7 @@ mod web {
             .item(0)
             .ok_or(WEB_ERROR_SELECT)?
             .append_child(&elem.into())
-            .ok()
-            .ok_or(WEB_ERROR_APPEND)?;
+            .map_err(|_| WEB_ERROR_APPEND)?;
     
         Ok(())
     }
@@ -404,7 +406,9 @@ pub async fn run() -> Result<(), Failed> {
                 std::file!(), std::line!(), std::column!());
 
             // We put the location in front to be 
-            // consistent with `FAILURE` behavior
+            // consistent with `FAILURE` behavior,
+            // there are only 2 places that an error thrown here can come from,
+            // so it remains useful
             log::error!("[{loc}] {err}");
 
             target.exit();

@@ -110,11 +110,11 @@ impl PipelinePackage {
     }
 }
 
-pub struct State<'window> {
+pub struct State {
     // WGPU interface
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'window>,
+    surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
 
     shader_compute: wgpu::ShaderModule,
@@ -137,26 +137,59 @@ pub struct State<'window> {
     window_size: winit::dpi::PhysicalSize<u32>,
 }
 
-impl<'window> State<'window> {
+impl State {
     pub(super) async fn new(
         window: sync::Arc<Window>,
-    ) -> anyhow::Result<State<'window>> {
+    ) -> anyhow::Result<Self> {
         //
         // WGPU State Information
 
         let window_size = window.inner_size();
 
         let instance_desc = wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            // NOTE: Specifying `wgpu::Backends::BROWSER_WEBGPU`
+            // ensures that WGPU never chooses WebGL2
+            backends: {
+                #[cfg(target_arch = "wasm32")]
+                let backends = wgpu::Backends::BROWSER_WEBGPU;
+
+                #[cfg(not(target_arch = "wasm32"))]
+                let backends = wgpu::Backends::all();
+
+                backends
+            },
             ..Default::default()
         };
 
         let instance = wgpu::Instance::new(instance_desc);
 
-        let surface_target = Box::new(window.clone());
-        let surface_target = wgpu::SurfaceTarget::Window(surface_target);
+        #[cfg(target_arch = "wasm32")]
+        unsafe fn target() -> anyhow::Result<wgpu::SurfaceTargetUnsafe> {
+            use wgpu::rwh;
 
-        let surface = instance.create_surface(surface_target)?;
+            let handle_display = rwh::WebDisplayHandle::new();
+            let handle_window = rwh::WebWindowHandle::new(2024);
+
+            Ok(wgpu::SurfaceTargetUnsafe::RawHandle { 
+                raw_display_handle: rwh::RawDisplayHandle::Web(handle_display),
+                raw_window_handle: rwh::RawWindowHandle::Web(handle_window),
+            })
+        }
+
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch="wasm32")] {
+                let surface_target = unsafe { target()? };
+
+                let surface = unsafe {
+                    instance.create_surface_unsafe(surface_target)?
+                };
+            } else {
+                let surface_target = Box::new(window.clone());
+                let surface_target = wgpu::SurfaceTarget::Window(surface_target);
+
+                let surface = instance.create_surface(surface_target)?;
+            }
+        }
 
         let adapter = instance.request_adapter(
             &wgpu::RequestAdapterOptions {
