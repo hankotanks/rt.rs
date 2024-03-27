@@ -39,16 +39,25 @@ impl PipelinePackage {
                 usage: wgpu::TextureUsages::STORAGE_BINDING 
                      | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[
-                    CONFIG.format, 
+                    CONFIG.format,
+                    #[cfg(target_arch = "wasm32")]
                     CONFIG.format.add_srgb_suffix(),
                 ],
             }
         );
 
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "wasm32")] {
+                let texture_view_render_format = CONFIG.format;
+            } else {
+                let texture_view_render_format = CONFIG.format.add_srgb_suffix();
+            }
+        }
+
         let texture_view_render = texture.create_view(
             &wgpu::TextureViewDescriptor {
                 label: None,
-                format: Some(CONFIG.format.add_srgb_suffix()),
+                format: Some(texture_view_render_format),
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 aspect: wgpu::TextureAspect::All,
                 base_mip_level: 0,
@@ -167,12 +176,13 @@ impl State {
         unsafe fn target() -> anyhow::Result<wgpu::SurfaceTargetUnsafe> {
             use wgpu::rwh;
 
-            let handle_display = rwh::WebDisplayHandle::new();
-            let handle_window = rwh::WebWindowHandle::new(2024);
-
             Ok(wgpu::SurfaceTargetUnsafe::RawHandle { 
-                raw_display_handle: rwh::RawDisplayHandle::Web(handle_display),
-                raw_window_handle: rwh::RawWindowHandle::Web(handle_window),
+                raw_display_handle: rwh::RawDisplayHandle::Web({
+                    rwh::WebDisplayHandle::new()
+                }),
+                raw_window_handle: rwh::RawWindowHandle::Web({
+                    rwh::WebWindowHandle::new(CONFIG.canvas_raw_handle)
+                }),
             })
         }
 
@@ -266,7 +276,13 @@ impl State {
 
         let caps = surface.get_capabilities(&adapter);
         
-        let format = CONFIG.format.add_srgb_suffix();
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "wasm32")] {
+                let format = CONFIG.format;
+            } else {
+                let format = CONFIG.format.add_srgb_suffix();
+            }
+        }
         if !caps.formats.contains(&format) {
             anyhow::bail!(wgpu::SurfaceError::Lost);
         }
@@ -285,6 +301,7 @@ impl State {
             alpha_mode: alpha_modes[0],
             view_formats: vec![
                 CONFIG.format, 
+                #[cfg(not(target_arch = "wasm32"))]
                 CONFIG.format.add_srgb_suffix(),
             ],
             desired_maximum_frame_latency: 1,

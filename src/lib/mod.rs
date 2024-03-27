@@ -61,10 +61,13 @@ pub struct Config {
     // otherwise workgroup 'tile' size is specified in the `Err` value
     pub resolution: Result<Size, u32>,
     pub fps: u32,
+    // This can be any number, it's used to bind the canvas to the surface
+    pub canvas_raw_handle: u32,
 }
 
 impl Config {
     pub fn wg_dim(&self) -> u32 {
+        // dim = GCF(width, height);
         let dim = match self.resolution {
             Ok(size) => {
                 let Size {
@@ -84,6 +87,8 @@ impl Config {
             Err(wg) => wg,
         };
 
+        // Hard limit the local group size
+        // WebGPU only supports 256 instances per workgroup at maximum
         if dim * dim > 256 { 16 } else { dim }
     }
 }
@@ -94,6 +99,7 @@ impl Default for Config {
             format: wgpu::TextureFormat::Rgba8Unorm,
             resolution: Err(16), // Ok(Size { width: 640, height: 480, }),
             fps: 15,
+            canvas_raw_handle: 2024,
         }
     }
 }
@@ -102,7 +108,7 @@ pub(crate) static CONFIG: once_cell::sync::Lazy<Config> = //
     // TODO: This could read from a config file (if present), otherwise
     once_cell::sync::Lazy::new(|| { Config::default() });
 
-#[cfg(target_arch="wasm32")]
+#[cfg(target_arch = "wasm32")]
 mod web {
     use std::{fmt, error};
 
@@ -194,7 +200,10 @@ mod web {
         elem.remove_attribute("style")
             .map_err(|_| WEB_ERROR_PROP)?;
 
-        elem.set_attribute("data-raw-handle", "2024")
+        let elem_handle = crate::CONFIG.canvas_raw_handle;
+        let elem_handle = format!("{}", elem_handle);
+        
+        elem.set_attribute("data-raw-handle", &elem_handle)
             .map_err(|_| WEB_ERROR_PROP)?;
     
         let elem = elem.dyn_into::<web_sys::HtmlCanvasElement>()
@@ -217,6 +226,7 @@ mod web {
 
 #[cfg_attr(target_arch="wasm32", wasm_bindgen(start))]
 pub async fn run() -> Result<(), Failed> {
+    // Initialize logging system according to platform
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));

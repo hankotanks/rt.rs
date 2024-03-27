@@ -46,6 +46,14 @@ impl<'a> Into<Pipeline<wgpu::RenderPipeline>> for super::PipelineBuilder<'a> {
                 ],
             }
         );
+
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "wasm32")] {
+                let inner_fragment_format = CONFIG.format;
+            } else {
+                let inner_fragment_format = CONFIG.format.add_srgb_suffix();
+            }
+        }
     
         let inner = self.device.create_render_pipeline(
             &wgpu::RenderPipelineDescriptor {
@@ -60,7 +68,7 @@ impl<'a> Into<Pipeline<wgpu::RenderPipeline>> for super::PipelineBuilder<'a> {
                     module: self.module,
                     entry_point: "fs_main",
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: CONFIG.format.add_srgb_suffix(),
+                        format: inner_fragment_format,
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent::REPLACE,
                             alpha: wgpu::BlendComponent::REPLACE,
